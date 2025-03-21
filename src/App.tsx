@@ -3,10 +3,11 @@ import './App.scss';
 import type GtfsManager from './workers/gtfs';
 import GtfsWorker from './workers/gtfs?worker';
 import * as Comlink from 'comlink';
-import { Layer, LineLayerSpecification, Map, Source } from 'react-map-gl/maplibre';
+import { Layer, LineLayerSpecification, Map, Source, useMap } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { Feature, FeatureCollection, MultiLineString, Point } from 'geojson';
-import { Box, Paper } from '@mui/material';
+import { Box, Button, List, ListItemButton, ListItemIcon, ListItemText, Paper, Stack, Typography } from '@mui/material';
+import { AgencyCollection, AgencyList } from './types';
+import { LngLatBounds } from 'maplibre-gl';
 
 const layerStyle: LineLayerSpecification = {
     id: 'line',
@@ -21,41 +22,12 @@ const layerStyle: LineLayerSpecification = {
     source: 'line-data'
 };
 
-interface AgencyCollection { 
-    routes: FeatureCollection<MultiLineString>;
-    stops: FeatureCollection<Point>;
-}
-
-const processGeojson = async function() {
-    const geojson: FeatureCollection<MultiLineString | Point> = await navigator.storage.getDirectory()
-        .then(opfs => opfs.getFileHandle('SC.geojson'))
-        .then(fh => fh.getFile())
-        .then(file => file.text())
-        .then(text => JSON.parse(text));
-        
-    const featureCollection = geojson.features.reduce((obj: AgencyCollection, feature) => {
-        if (feature.geometry.type === 'MultiLineString') 
-            obj.routes.features.push(feature as Feature<MultiLineString>);
-        else obj.stops.features.push(feature as Feature<Point>);
-
-        return obj;
-    }, {
-        routes: {
-            type: 'FeatureCollection',
-            features: []
-        },
-        stops: {
-            type: 'FeatureCollection',
-            features: []
-        },
-    });
-
-    return featureCollection;
-}
-
 const App = function() {
     const dbWorkerRef = useRef<Comlink.Remote<GtfsManager> | null>(undefined);
-    const [agencyCollection, setAgencyCollection] = useState<AgencyCollection | null>(null);
+    const [agencyCollection, setAgencyCollection] = useState<AgencyCollection>();
+    const [agencies, setAgencies] = useState<AgencyList>();
+    const [selectedAgency, setSelectedAgency] = useState('');
+    const map = useMap();
 
     useEffect(() => {
         if (dbWorkerRef.current === undefined) {
@@ -63,29 +35,66 @@ const App = function() {
             const worker = new GtfsWorker();
             worker.onmessage = () => {
                 dbWorkerRef.current = Comlink.wrap<GtfsManager>(worker);
-                processGeojson().then(setAgencyCollection);
+                dbWorkerRef.current.agencyCollection.then(setAgencyCollection);
+                dbWorkerRef.current.getAgencies().then(setAgencies);
+                worker.onmessage = null;
             };
         }
     }, []);
 
-    if (!agencyCollection) return <></>;
+    useEffect(() => {
+        if (!map.default || !agencyCollection) return;
+
+        const bounds = selectedAgency ? 
+            agencyCollection.boundsByAgency[selectedAgency] : 
+            agencyCollection.bounds;
+        map.default.fitBounds(
+            bounds instanceof LngLatBounds ?
+                bounds : 
+                new LngLatBounds(bounds._sw, bounds._ne),
+            { padding: { left: 525, right: 25, top: 25, bottom: 25 } });
+    }, [map, selectedAgency, agencyCollection]);
+    
+    if (!agencyCollection || !agencies) return <></>;
 
     return (
     <Box position='relative' height='100%'>
         <Map
             initialViewState={{
-                longitude: -121.893028,
-                latitude: 37.335480,
-                zoom: 10,
+                longitude: -122.37,
+                latitude: 37.81,
+                zoom: 8.5,
             }}
             style={{ height: '100%', position: 'absolute', zIndex: 0 }}
             mapStyle='https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
         >
-            <Source id="line-data" type="geojson" data={agencyCollection.routes ?? ''}>
+            <Source id="line-data" type="geojson" data={selectedAgency ? agencyCollection.routesByAgency[selectedAgency] : agencyCollection.routes}>
                 <Layer {...layerStyle} />
             </Source>
         </Map>
-        <Paper elevation={24} sx={{ position: 'absolute', zIndex: 5, width: '25%', height: '80%', ml: '1rem', mt: '1rem' }}>
+        <Paper elevation={24} sx={{ 
+            position: 'absolute', zIndex: 5, width: '32rem', height: '80%', ml: '1rem', mt: '1rem',
+        }}>
+            <Stack sx={{ height: '100%' }}>
+                <Typography variant='h6' sx={{ p: '1rem' }}>
+                    Select Agency
+                </Typography>
+                <List sx={{ width: '100%', overflow: 'auto' }}>
+                    { agencies.list.map((agency) => (
+                    <ListItemButton key={agency.agency_id} selected={selectedAgency === agency.agency_id} onClick={() => {
+                        setSelectedAgency(prev => prev === agency.agency_id ? '' : (agency.agency_id ?? ''));
+                    }}>
+                        <ListItemIcon>
+                            <ListItemText primary={agency.agency_id} />
+                        </ListItemIcon>
+                        <ListItemText primary={agency.agency_name} secondary={agency.agency_url} />
+                    </ListItemButton>
+                    )) }
+                </List>
+                <Button color='primary' sx={{ p: '1rem' }} disabled={!selectedAgency}>
+                    Select
+                </Button>
+            </Stack>
             
         </Paper>
     </Box>
